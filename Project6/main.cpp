@@ -8,7 +8,7 @@
 #include <mutex>
 #include <conio.h>
 
-std::mutex addrMutex;  // Protect shared memory
+std::mutex addrMutex;
 const SIZE_T BUFFER_SIZE = 4096; // Read in 4KB chunks for efficiency
 
 void ScanMemoryChunk(HANDLE hProcess, uintptr_t start, uintptr_t end, int targetValue, std::unordered_set<uintptr_t>& foundAddresses) {
