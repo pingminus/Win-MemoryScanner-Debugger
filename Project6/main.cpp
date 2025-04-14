@@ -9,27 +9,64 @@
 #include <conio.h>
 
 std::mutex addrMutex;
-const SIZE_T BUFFER_SIZE = 4096; // Read in 4KB chunks for efficiency
+const SIZE_T BUFFER_SIZE = 4096;
 
-void ScanMemoryChunk(HANDLE hProcess, uintptr_t start, uintptr_t end, int targetValue, std::unordered_set<uintptr_t>& foundAddresses) {
+enum class ScanType {
+    INT,
+    FLOAT,
+    SHORT
+};
+
+std::string ScanTypeName(ScanType type) {
+    switch (type) {
+    case ScanType::INT: return "int";
+    case ScanType::FLOAT: return "float";
+    case ScanType::SHORT: return "short";
+    default: return "unknown";
+    }
+}
+
+void ScanMemoryChunk(HANDLE hProcess, uintptr_t start, uintptr_t end, ScanType type, void* targetValue, std::unordered_set<uintptr_t>& foundAddresses) {
     std::vector<BYTE> buffer(BUFFER_SIZE);
     SIZE_T bytesRead;
 
     for (uintptr_t addr = start; addr < end; addr += BUFFER_SIZE) {
         if (ReadProcessMemory(hProcess, (LPCVOID)addr, buffer.data(), BUFFER_SIZE, &bytesRead)) {
             for (SIZE_T i = 0; i < bytesRead - sizeof(int); i++) {
-                int* valuePtr = reinterpret_cast<int*>(&buffer[i]);
-                if (*valuePtr == targetValue) {
+                bool match = false;
+
+                switch (type) {
+                case ScanType::INT: {
+                    int val;
+                    memcpy(&val, &buffer[i], sizeof(int));
+                    match = (val == *(int*)targetValue);
+                    break;
+                }
+                case ScanType::FLOAT: {
+                    float val;
+                    memcpy(&val, &buffer[i], sizeof(float));
+                    match = (val == *(float*)targetValue);
+                    break;
+                }
+                case ScanType::SHORT: {
+                    short val;
+                    memcpy(&val, &buffer[i], sizeof(short));
+                    match = (val == *(short*)targetValue);
+                    break;
+                }
+                }
+
+                if (match) {
                     std::lock_guard<std::mutex> lock(addrMutex);
                     foundAddresses.insert(addr + i);
-                    std::cout << "Found value at: " << std::hex << addr + i << std::endl;
+                    std::cout << "Found at: 0x" << std::hex << addr + i << std::endl;
                 }
             }
         }
     }
 }
 
-void ScanProcess(DWORD pid, int targetValue, std::unordered_set<uintptr_t>& foundAddresses) {
+void ScanProcess(DWORD pid, ScanType type, void* targetValue, std::unordered_set<uintptr_t>& foundAddresses) {
     HANDLE hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
     if (!hProcess) {
         std::cerr << "Failed to open process!" << std::endl;
@@ -42,17 +79,16 @@ void ScanProcess(DWORD pid, int targetValue, std::unordered_set<uintptr_t>& foun
 
     while (VirtualQueryEx(hProcess, (LPCVOID)addr, &mbi, sizeof(mbi))) {
         if ((mbi.State == MEM_COMMIT) && !(mbi.Protect & PAGE_NOACCESS) && !(mbi.Protect & PAGE_GUARD)) {
-            threads.emplace_back(ScanMemoryChunk, hProcess, (uintptr_t)mbi.BaseAddress, (uintptr_t)mbi.BaseAddress + mbi.RegionSize, targetValue, std::ref(foundAddresses));
+            threads.emplace_back(ScanMemoryChunk, hProcess, (uintptr_t)mbi.BaseAddress, (uintptr_t)mbi.BaseAddress + mbi.RegionSize, type, targetValue, std::ref(foundAddresses));
         }
         addr = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
     }
 
-    for (auto& t : threads) t.join(); // Wait for all threads to finish
-
+    for (auto& t : threads) t.join();
     CloseHandle(hProcess);
 }
 
-std::unordered_set<uintptr_t> CheckPreviousAddresses(DWORD pid, const std::unordered_set<uintptr_t>& addresses, int newTargetValue) {
+std::unordered_set<uintptr_t> CheckPreviousAddresses(DWORD pid, const std::unordered_set<uintptr_t>& addresses, ScanType type, void* targetValue) {
     HANDLE hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
     if (!hProcess) {
         std::cerr << "Failed to open process!" << std::endl;
@@ -60,75 +96,121 @@ std::unordered_set<uintptr_t> CheckPreviousAddresses(DWORD pid, const std::unord
     }
 
     SIZE_T bytesRead;
-    int buffer;
-    std::unordered_set<uintptr_t> newFoundAddresses;
+    std::unordered_set<uintptr_t> newFound;
 
     for (const auto& addr : addresses) {
-        if (ReadProcessMemory(hProcess, (LPCVOID)addr, &buffer, sizeof(buffer), &bytesRead)) {
-            if (buffer == newTargetValue) {
-                std::cout << "Address " << std::hex << addr << " now holds the new target value!" << std::endl;
-                newFoundAddresses.insert(addr);  // Add to newFoundAddresses if the value matches
+        bool match = false;
+
+        switch (type) {
+        case ScanType::INT: {
+            int val;
+            if (ReadProcessMemory(hProcess, (LPCVOID)addr, &val, sizeof(int), &bytesRead)) {
+                if (val == *(int*)targetValue) {
+                    std::cout << "0x" << std::hex << addr << " holds: " << std::dec << val << " (match)\n";
+                    match = true;
+                }
             }
+            break;
         }
+        case ScanType::FLOAT: {
+            float val;
+            if (ReadProcessMemory(hProcess, (LPCVOID)addr, &val, sizeof(float), &bytesRead)) {
+                if (val == *(float*)targetValue) {
+                    std::cout << "0x" << std::hex << addr << " holds: " << std::dec << val << " (match)\n";
+                    match = true;
+                }
+            }
+            break;
+        }
+        case ScanType::SHORT: {
+            short val;
+            if (ReadProcessMemory(hProcess, (LPCVOID)addr, &val, sizeof(short), &bytesRead)) {
+                if (val == *(short*)targetValue) {
+                    std::cout << "0x" << std::hex << addr << " holds: " << std::dec << val << " (match)\n";
+                    match = true;
+                }
+            }
+            break;
+        }
+        }
+
+        if (match)
+            newFound.insert(addr);
     }
 
     CloseHandle(hProcess);
-    return newFoundAddresses;
+    return newFound;
 }
 
 int main() {
-    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    PROCESSENTRY32 pe;
-    pe.dwSize = sizeof(pe);
-    std::unordered_map<int, std::pair<DWORD, std::wstring>> processMap;
-    int index = 0;
+    while (true) {
+        HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        PROCESSENTRY32 pe;
+        pe.dwSize = sizeof(pe);
+        std::unordered_map<int, std::pair<DWORD, std::wstring>> processMap;
+        int index = 0;
 
-    if (Process32First(hSnap, &pe)) {
+        if (Process32First(hSnap, &pe)) {
+            do {
+                std::wcout << index << ". PID: " << pe.th32ProcessID << L": " << pe.szExeFile << std::endl;
+                processMap[index] = { pe.th32ProcessID, pe.szExeFile };
+                index++;
+            } while (Process32Next(hSnap, &pe));
+        }
+        CloseHandle(hSnap);
+
+        std::cout << "\nInput index of process to scan: ";
+        int input;
+        std::cin >> input;
+        if (processMap.find(input) == processMap.end()) return 0;
+
+        DWORD pid = processMap[input].first;
+
+        std::cout << "Select value type to scan:\n[1] int\n[2] float\n[3] short\n> ";
+        int typeChoice;
+        std::cin >> typeChoice;
+
+        ScanType scanType = ScanType::INT;
+        if (typeChoice == 2) scanType = ScanType::FLOAT;
+        else if (typeChoice == 3) scanType = ScanType::SHORT;
+
+        void* target = nullptr;
+        int ival; float fval; short sval;
+
+        std::cout << "Enter initial value: ";
+        switch (scanType) {
+        case ScanType::INT:
+            std::cin >> ival; target = &ival; break;
+        case ScanType::FLOAT:
+            std::cin >> fval; target = &fval; break;
+        case ScanType::SHORT:
+            std::cin >> sval; target = &sval; break;
+        }
+
+        std::unordered_set<uintptr_t> foundAddresses;
+        ScanProcess(pid, scanType, target, foundAddresses);
+        std::cout << "Initial scan found " << foundAddresses.size() << " addresses.\n";
+
+        char again;
         do {
-            std::wcout << index << ". PID: " << pe.th32ProcessID << L": " << pe.szExeFile << std::endl;
-            processMap[index] = { pe.th32ProcessID, pe.szExeFile };
-            index++;
-        } while (Process32Next(hSnap, &pe));
-    }
-    CloseHandle(hSnap);
+            std::cout << "\nEnter new value to filter previous addresses: ";
+            switch (scanType) {
+            case ScanType::INT:
+                std::cin >> ival; target = &ival; break;
+            case ScanType::FLOAT:
+                std::cin >> fval; target = &fval; break;
+            case ScanType::SHORT:
+                std::cin >> sval; target = &sval; break;
+            }
 
-    std::cout << "\nInput Index of process you want to scan: ";
-    int input;
-    std::cin >> input;
+            foundAddresses = CheckPreviousAddresses(pid, foundAddresses, scanType, target);
+            std::cout << "Remaining matching addresses: " << foundAddresses.size() << "\n";
+            std::cout << "Check again? [Y/N]: ";
+            std::cin >> again;
 
-    if (processMap.find(input) == processMap.end()) return 0;
-
-    std::wcout << "\nScan this Process?: Pname: " << processMap[input].second << " PID: " << processMap[input].first << std::endl;
-    std::cout << "[Y] or [N]: ";
-    char c;
-    std::cin >> c;
-    if (c == 'N') return 0;
-
-    std::cout << "Enter value to search for: ";
-    int targetValue;
-    std::cin >> targetValue;
-
-    std::unordered_set<uintptr_t> foundAddresses;
-    ScanProcess(processMap[input].first, targetValue, foundAddresses);
-
-    std::cout << "Do you want to check previous addresses for new target value again?" << std::endl;
-    std::cout << "[Y] or [N]: ";
-    char checkAgain;
-    std::cin >> checkAgain;
-
-    while (checkAgain == 'Y') {
-        // Create a new map before checking
-        std::cout << "Enter new value to search for in the previously found addresses: ";
-        int newTargetValue;
-        std::cin >> newTargetValue;
-
-        // Get the new set of addresses matching the new target value
-        foundAddresses = CheckPreviousAddresses(processMap[input].first, foundAddresses, newTargetValue);
-
-        std::cout << "Do you want to check previous addresses for new target value again?" << std::endl;
-        std::cout << "[Y] or [N]: ";
-        std::cin >> checkAgain;
+        } while (again == 'Y' || again == 'y');
     }
 
     return 0;
 }
+
