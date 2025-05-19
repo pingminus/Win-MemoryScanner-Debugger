@@ -13,4 +13,4 @@ This project is a **multithreaded memory scanner** for Windows, written in C++. 
 - C++17 or later
 - Administrator privileges (for accessing some processes' memory)
 
-- Compile Main.cpp
+- Compile Main.cpp or open via visual studio
